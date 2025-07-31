@@ -17,10 +17,7 @@
   <ItemGroup>
     <Folder Include="Configuration\" />
     <Folder Include="Extensions\" />
-    <Folder Include="Persistence\Repositories\" />
-    <Folder Include="Services\Authentication\" />
     <Folder Include="Services\Caching\" />
-    <Folder Include="Services\Security\" />
   </ItemGroup>
 
   <ItemGroup>

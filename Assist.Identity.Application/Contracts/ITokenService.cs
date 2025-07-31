@@ -14,13 +14,12 @@ public interface ITokenService
     /// <summary>
     /// Access token generate etme
     /// User login olduğunda çağrılır
+    /// User entity'sinden tüm gerekli bilgiler extract edilir
     /// </summary>
-    /// <param name="user">User entity</param>
-    /// <param name="roles">User'ın role'leri</param>
-    /// <param name="permissions">User'ın permission'ları</param>
+    /// <param name="user">User entity - roles ve permissions buradan alınır</param>
     /// <param name="cancellationToken">Cancellation token</param>
     /// <returns>JWT access token</returns>
-    Task<string> GenerateAccessTokenAsync(User user, IEnumerable<string> roles, IEnumerable<string> permissions, CancellationToken cancellationToken = default);
+    Task<string> GenerateAccessTokenAsync(User user, CancellationToken cancellationToken = default);
 
     /// <summary>
     /// Refresh token generate etme
