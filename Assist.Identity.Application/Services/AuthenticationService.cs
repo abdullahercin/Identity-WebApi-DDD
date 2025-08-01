@@ -56,12 +56,12 @@ public class AuthenticationService : IAuthenticationService
             // Domain method ile login - Business rules burada check edilir
             user.Login(request.Password, request.IpAddress, request.UserAgent);
 
-            // User roles ve permissions
+            // User roles ve permissions - Response için
             var roles = user.GetRoleNames().ToList();
             var permissions = user.GetPermissions().ToList();
 
-            // Token generation
-            var accessToken = await _tokenService.GenerateAccessTokenAsync(user, roles, permissions, cancellationToken);
+            // Token generation - Sadece user entity gönder, roles/permissions User'dan extract edilecek
+            var accessToken = await _tokenService.GenerateAccessTokenAsync(user, cancellationToken);
             var refreshToken = await _tokenService.GenerateRefreshTokenAsync(cancellationToken);
 
             // Refresh token persist
