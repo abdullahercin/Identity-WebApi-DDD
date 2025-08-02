@@ -1,4 +1,5 @@
 ﻿using Assist.Identity.Application.Extensions;
+using Assist.Identity.Infrastructure.Configuration;
 using Assist.Identity.Infrastructure.Extensions;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.IdentityModel.Tokens;
@@ -12,45 +13,50 @@ builder.Services.AddControllers();
 // Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
 
-// JWT Authentication Setup
-builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
-    .AddJwtBearer(options =>
+// JWT Authentication - using configuration
+var jwtSettings = builder.Configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>();
+if (jwtSettings == null)
+{
+    throw new InvalidOperationException("JWT configuration is missing");
+}
+
+builder.Services.AddAuthentication("Bearer")
+    .AddJwtBearer("Bearer", options =>
     {
-        var jwtSettings = builder.Configuration.GetSection("JWT");
-        var secretKey = jwtSettings["SecretKey"] ?? throw new InvalidOperationException("JWT SecretKey is required");
+        options.Authority = jwtSettings.Issuer;
+        options.Audience = jwtSettings.Audience;
+        options.RequireHttpsMetadata = false; // Development only
 
-        options.TokenValidationParameters = new TokenValidationParameters
+        options.TokenValidationParameters = new Microsoft.IdentityModel.Tokens.TokenValidationParameters
         {
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = new SymmetricSecurityKey(Encoding.UTF8.GetBytes(secretKey)),
             ValidateIssuer = true,
-            ValidIssuer = jwtSettings["Issuer"],
+            ValidIssuer = jwtSettings.Issuer,
             ValidateAudience = true,
-            ValidAudience = jwtSettings["Audience"],
+            ValidAudience = jwtSettings.Audience,
             ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromMinutes(5),
-            RequireExpirationTime = true,
-            RequireSignedTokens = true
-        };
-
-        // JWT Bearer events for logging and debugging
-        options.Events = new JwtBearerEvents
-        {
-            OnAuthenticationFailed = context =>
-            {
-                var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
-                logger.LogWarning("JWT Authentication failed: {Exception}", context.Exception.Message);
-                return Task.CompletedTask;
-            },
-            OnTokenValidated = context =>
-            {
-                var logger = context.HttpContext.RequestServices.GetRequiredService<ILogger<Program>>();
-                var userId = context.Principal?.FindFirst("sub")?.Value;
-                logger.LogDebug("JWT Authentication successful for user: {UserId}", userId);
-                return Task.CompletedTask;
-            }
+            ValidateIssuerSigningKey = true,
+            IssuerSigningKey = new Microsoft.IdentityModel.Tokens.SymmetricSecurityKey(
+                System.Text.Encoding.UTF8.GetBytes(jwtSettings.SecretKey)),
+            ClockSkew = TimeSpan.Zero
         };
     });
+
+// Authorization policies
+builder.Services.AddAuthorization(options =>
+{
+    // Default policy: require authenticated user
+    options.DefaultPolicy = new Microsoft.AspNetCore.Authorization.AuthorizationPolicyBuilder()
+        .RequireAuthenticatedUser()
+        .Build();
+
+    // Admin policy: require Admin role
+    options.AddPolicy("AdminOnly", policy =>
+        policy.RequireRole("Admin"));
+
+    // Manager policy: require Manager or Admin role
+    options.AddPolicy("ManagerOrAdmin", policy =>
+        policy.RequireRole("Manager", "Admin"));
+});
 
 // Clean Architecture Layers
 builder.Services.AddApplicationServices();                    // Application Layer
@@ -108,4 +114,21 @@ app.UseAuthorization();   // Authorization middleware
 
 app.MapControllers();
 
-app.Run();
+try
+{
+    app.Logger.LogInformation("Starting Assist Identity API...");
+
+    // Log configuration summary
+    app.Logger.LogInformation("Configuration Summary:");
+    app.Logger.LogInformation("- JWT Issuer: {JwtIssuer}", jwtSettings.Issuer);
+    app.Logger.LogInformation("- JWT Audience: {JwtAudience}", jwtSettings.Audience);
+    app.Logger.LogInformation("- Access Token Expiration: {AccessTokenExpiration} minutes", jwtSettings.AccessTokenExpirationMinutes);
+    app.Logger.LogInformation("- Refresh Token Expiration: {RefreshTokenExpiration} days", jwtSettings.RefreshTokenExpirationDays);
+
+    app.Run();
+}
+catch (Exception ex)
+{
+    app.Logger.LogCritical(ex, "Application startup failed");
+    throw;
+}

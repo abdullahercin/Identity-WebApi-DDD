@@ -8,6 +8,7 @@ using Microsoft.IdentityModel.Tokens;
 using Assist.Identity.Application.Contracts;
 using Assist.Identity.Application.Models;
 using Assist.Identity.Domain.Entities;
+using Assist.Identity.Infrastructure.Configuration;
 
 namespace Assist.Identity.Infrastructure.Services.Security;
 
@@ -512,17 +513,4 @@ public class JwtTokenService : ITokenService
     }
 
     #endregion
-}
-
-/// <summary>
-/// JWT Settings Configuration Class
-/// appsettings.json'dan JWT configuration'ı map etmek için
-/// </summary>
-public class JwtSettings
-{
-    public string SecretKey { get; set; } = null!;
-    public string Issuer { get; set; } = null!;
-    public string Audience { get; set; } = null!;
-    public int AccessTokenExpirationMinutes { get; set; }
-    public int RefreshTokenExpirationDays { get; set; }
 }

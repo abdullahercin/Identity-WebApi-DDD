@@ -1,5 +1,6 @@
 ﻿using Assist.Identity.Domain.Common;
 using Assist.Identity.Domain.Events;
+using Assist.Identity.Domain.ValueObjects;
 
 namespace Assist.Identity.Domain.Entities;
 
@@ -440,30 +441,107 @@ public class User : BaseEntity
                        adminRoles.Contains(ur.Role.Name, StringComparer.OrdinalIgnoreCase));
     }
 
+
     /// <summary>
-    /// User'ın role ve permission bilgilerinin summary'sini getir
+    /// User'ın herhangi bir role'e sahip olup olmadığını kontrol et
     /// 
-    /// Debug, logging ve audit purposes için kullanılır.
-    /// Production'da performance overhead olabileceği için dikkatli kullanılmalı.
+    /// Use cases:
+    /// - User onboarding validation
+    /// - System health checks
+    /// - Authorization debug
     /// </summary>
-    /// <returns>User'ın authorization summary'si</returns>
-    public UserAuthorizationSummary GetAuthorizationSummary()
+    /// <returns>En az bir aktif role varsa true</returns>
+    public bool HasAnyRole()
+    {
+        return UserRoles.Any(ur => ur.Role != null && ur.Role.IsActive);
+    }
+
+    /// <summary>
+    /// User'ın herhangi bir permission'a sahip olup olmadığını kontrol et
+    /// 
+    /// Use cases:
+    /// - Basic authorization check
+    /// - System access validation
+    /// - Debug purposes
+    /// </summary>
+    /// <returns>En az bir permission varsa true</returns>
+    public bool HasAnyPermission()
+    {
+        return GetPermissions().Any();
+    }
+
+    /// <summary>
+    /// Multiple role check - verilen role'lerden herhangi birine sahip mi
+    /// 
+    /// OR logic: Role'lerden biri varsa true döner
+    /// Case-insensitive comparison
+    /// </summary>
+    /// <param name="roleNames">Kontrol edilecek role adları</param>
+    /// <returns>Herhangi bir role varsa true</returns>
+    public bool HasAnyRole(params string[] roleNames)
+    {
+        if (roleNames == null || roleNames.Length == 0)
+            return false;
+
+        return roleNames.Any(roleName => HasRole(roleName));
+    }
+
+    /// <summary>
+    /// Multiple permission check - verilen permission'lardan herhangi birine sahip mi
+    /// 
+    /// OR logic: Permission'lardan biri varsa true döner
+    /// Case-insensitive comparison
+    /// </summary>
+    /// <param name="permissionNames">Kontrol edilecek permission adları</param>
+    /// <returns>Herhangi bir permission varsa true</returns>
+    public bool HasAnyPermission(params string[] permissionNames)
+    {
+        if (permissionNames == null || permissionNames.Length == 0)
+            return false;
+
+        return permissionNames.Any(permissionName => HasPermission(permissionName));
+    }
+
+    /// <summary>
+    /// All permissions check - verilen tüm permission'lara sahip mi
+    /// 
+    /// AND logic: Tüm permission'lar varsa true döner
+    /// Empty array için true döner (vacuous truth)
+    /// </summary>
+    /// <param name="permissionNames">Kontrol edilecek permission adları</param>
+    /// <returns>Tüm permission'lar varsa true</returns>
+    public bool HasAllPermissions(params string[] permissionNames)
+    {
+        if (permissionNames == null || permissionNames.Length == 0)
+            return true; // Vacuous truth
+
+        return permissionNames.All(permissionName => HasPermission(permissionName));
+    }
+
+    /// <summary>
+    /// User'ın authorization durumunun snapshot'ını getir
+    /// 
+    /// Domain method: Domain layer'da kalır, external dependency yok.
+    /// Application layer bu snapshot'ı richer DTO'ya map edebilir.
+    /// </summary>
+    /// <returns>User'ın authorization snapshot'ı</returns>
+    public UserAuthorizationSummary GetAuthorizationSnapshot()
     {
         var roles = GetRoleNames().ToList();
         var permissions = GetPermissions().ToList();
 
-        return new UserAuthorizationSummary
-        {
-            UserId = Id,
-            Email = Email?.Value ?? "Unknown",
-            RoleCount = roles.Count,
-            PermissionCount = permissions.Count,
-            Roles = roles,
-            Permissions = permissions,
-            IsAdmin = IsAdmin(),
-            HasAnyRole = roles.Any(),
-            HasAnyPermission = permissions.Any()
-        };
+        return new UserAuthorizationSummary(
+            userId: Id,
+            email: Email?.Value ?? "Unknown",
+            firstName: FirstName,
+            lastName: LastName,
+            tenantId: TenantId,
+            isActive: IsActive,
+            emailConfirmed: EmailConfirmed,
+            lastLoginAt: LastLoginAt,
+            roles: roles,
+            permissions: permissions
+        );
     }
 
     /// <summary>
@@ -479,25 +557,7 @@ public class User : BaseEntity
     /// Full name property
     /// </summary>
     public string FullName => $"{FirstName} {LastName}";
-
-    // Supporting DTO class - Application/Models klasörüne konulacak
-    /// <summary>
-    /// User Authorization Summary DTO
-    /// Debug ve monitoring purposes için kullanılır
-    /// </summary>
-    public class UserAuthorizationSummary
-    {
-        public Guid UserId { get; set; }
-        public string Email { get; set; } = string.Empty;
-        public int RoleCount { get; set; }
-        public int PermissionCount { get; set; }
-        public List<string> Roles { get; set; } = new();
-        public List<string> Permissions { get; set; } = new();
-        public bool IsAdmin { get; set; }
-        public bool HasAnyRole { get; set; }
-        public bool HasAnyPermission { get; set; }
-    }
-
+    
     #endregion
 
     #region Private Helper Methods

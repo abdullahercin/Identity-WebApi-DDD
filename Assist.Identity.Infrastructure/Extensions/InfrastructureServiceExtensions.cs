@@ -114,6 +114,19 @@ public static class InfrastructureServicesExtension
             return Microsoft.Extensions.Options.Options.Create(emailSettings);
         });
 
+        // JWT Settings (Token configuration) 
+        services.Configure<JwtSettings>(configuration.GetSection(JwtSettings.SectionName));
+        services.AddSingleton(resolver =>
+        {
+            var jwtSettings = configuration.GetSection(JwtSettings.SectionName).Get<JwtSettings>()
+                              ?? throw new InvalidOperationException("JWT configuration is missing");
+
+            // Validate JWT configuration at startup
+            jwtSettings.Validate();
+
+            return Microsoft.Extensions.Options.Options.Create(jwtSettings);
+        });
+
         // App Settings (URL configuration)
         services.Configure<AppSettings>(configuration.GetSection(AppSettings.SectionName));
         services.AddSingleton(resolver =>
