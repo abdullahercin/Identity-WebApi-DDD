@@ -11,10 +11,6 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Folder Include="Controllers\" />
-  </ItemGroup>
-
-  <ItemGroup>
     <ProjectReference Include="..\Assist.Identity.Application\Assist.Identity.Application.csproj" />
     <ProjectReference Include="..\Assist.Identity.Infrastructure\Assist.Identity.Infrastructure.csproj" />
   </ItemGroup>

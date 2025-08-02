@@ -1,12 +1,11 @@
 ﻿namespace Assist.Identity.Application.Services;
 
-using Assist.Identity.Application.Abstractions;
-using Assist.Identity.Application.Contracts;
-using Assist.Identity.Application.DTOs.Requests;
-using Assist.Identity.Application.DTOs.Responses;
-using Assist.Identity.Application.Models;
-using Assist.Identity.Domain.Entities;
-using Assist.Identity.Domain.Exceptions;
+using Abstractions;
+using Contracts;
+using DTOs.Requests;
+using DTOs.Responses;
+using Models;
+using Domain.Entities;
 using AutoMapper;
 
 /// <summary>
