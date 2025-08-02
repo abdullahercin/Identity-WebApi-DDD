@@ -308,49 +308,162 @@ public class User : BaseEntity
     #endregion
 
     #region Query Methods
-
+    
     /// <summary>
     /// User'ın sahip olduğu role adlarını getir
+    /// 
+    /// JWT token generation sırasında kullanılır.
+    /// Domain-driven approach: Business logic domain layer'da kalır.
+    /// 
+    /// Navigation path: User -> UserRoles -> Role -> Role.Name
+    /// 
+    /// Performance Note: 
+    /// Bu method EF Core tarafından lazy loading ile çağrılabilir.
+    /// Bulk operations için repository'de Include() ile eager loading yapılmalı.
+    /// 
+    /// Business Rules:
+    /// - Sadece aktif role'ler döndürülür (IsActive = true)
+    /// - Role adları distinct olarak döndürülür (theoretically impossible duplicate ama safety için)
+    /// - Empty collection döndürülebilir (user'ın hiç role'ü yoksa)
     /// </summary>
-    /// <returns>Role isimleri</returns>
+    /// <returns>User'ın sahip olduğu aktif role adları</returns>
     public IEnumerable<string> GetRoleNames()
     {
         return UserRoles
-            .Where(ur => ur.Role.IsActive)
-            .Select(ur => ur.Role.Name);
+            .Where(ur => ur.Role != null && ur.Role.IsActive) // Safety check + business rule
+            .Select(ur => ur.Role.Name)
+            .Where(name => !string.IsNullOrEmpty(name))       // Additional safety
+            .Distinct()                                       // Ensure uniqueness
+            .ToList();                                        // Materialize to avoid multiple enumeration
     }
 
     /// <summary>
-    /// User'ın sahip olduğu permission'ları getir
+    /// User'ın sahip olduğu tüm permission'ları getir
+    /// 
+    /// JWT token generation ve authorization sırasında kullanılır.
+    /// Complex navigation path ile tüm permissions'ları aggregate eder.
+    /// 
+    /// Navigation path: 
+    /// User -> UserRoles -> Role -> RolePermissions -> Permission -> Permission.Name
+    /// 
+    /// Business Logic:
+    /// 1. User'ın tüm aktif role'lerini al
+    /// 2. Her role'ün permission'larını al
+    /// 3. Duplicate permission'ları kaldır
+    /// 4. Permission adlarını döndür
+    /// 
+    /// Performance Considerations:
+    /// - Bu method potentially expensive olabilir (multiple joins)
+    /// - Production'da caching consideration yapılmalı
+    /// - Repository'de Include() ile eager loading önemli
+    /// 
+    /// Security Note:
+    /// Permission checking'de bu method kullanılır, doğru olması kritik.
     /// </summary>
-    /// <returns>Permission isimleri</returns>
+    /// <returns>User'ın sahip olduğu tüm permission adları</returns>
     public IEnumerable<string> GetPermissions()
     {
         return UserRoles
-            .Where(ur => ur.Role.IsActive)
-            .SelectMany(ur => ur.Role.RolePermissions)
-            .Select(rp => rp.Permission.Name)
-            .Distinct();
+            .Where(ur => ur.Role != null && ur.Role.IsActive)    // Sadece aktif role'ler
+            .SelectMany(ur => ur.Role.RolePermissions)           // Her role'ün permission'ları
+            .Where(rp => rp.Permission != null)                  // Safety check
+            .Select(rp => rp.Permission.Name)                    // Permission adlarını al
+            .Where(name => !string.IsNullOrEmpty(name))          // Null/empty check
+            .Distinct()                                          // Duplicate elimination
+            .ToList();                                           // Materialize
     }
 
     /// <summary>
-    /// Specific permission kontrolü
+    /// User'ın specific bir permission'a sahip olup olmadığını kontrol et
+    /// 
+    /// Authorization pipeline'da sık kullanılır.
+    /// GetPermissions()'dan daha performant (early termination).
+    /// 
+    /// Use cases:
+    /// - [Authorize] attribute'larda custom authorization
+    /// - Business logic'te permission checking
+    /// - UI'da conditional rendering
     /// </summary>
-    /// <param name="permissionName">Permission adı</param>
-    /// <returns>Permission varsa true</returns>
+    /// <param name="permissionName">Kontrol edilecek permission adı</param>
+    /// <returns>Permission varsa true, yoksa false</returns>
     public bool HasPermission(string permissionName)
     {
-        return GetPermissions().Contains(permissionName);
+        if (string.IsNullOrWhiteSpace(permissionName))
+            return false;
+
+        return UserRoles
+            .Where(ur => ur.Role != null && ur.Role.IsActive)
+            .SelectMany(ur => ur.Role.RolePermissions)
+            .Any(rp => rp.Permission != null &&
+                       rp.Permission.Name.Equals(permissionName, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
-    /// Specific role kontrolü
+    /// User'ın specific bir role'e sahip olup olmadığını kontrol et
+    /// 
+    /// Role-based authorization için kullanılır.
+    /// 
+    /// Use cases:
+    /// - [Authorize(Roles = "Admin")] kontrolü
+    /// - Business logic'te role checking
+    /// - UI'da role-based conditional rendering
     /// </summary>
-    /// <param name="roleName">Role adı</param>
-    /// <returns>Role varsa true</returns>
+    /// <param name="roleName">Kontrol edilecek role adı</param>
+    /// <returns>Role varsa true, yoksa false</returns>
     public bool HasRole(string roleName)
     {
-        return GetRoleNames().Contains(roleName);
+        if (string.IsNullOrWhiteSpace(roleName))
+            return false;
+
+        return UserRoles
+            .Any(ur => ur.Role != null &&
+                       ur.Role.IsActive &&
+                       ur.Role.Name.Equals(roleName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// User'ın herhangi bir admin role'e sahip olup olmadığını kontrol et
+    /// 
+    /// Admin-level operations için quick check.
+    /// Business rule: "Admin" ve "Administrator" role'leri admin olarak kabul edilir.
+    /// 
+    /// Extensible design: İleride admin role'ler configurable yapılabilir.
+    /// </summary>
+    /// <returns>User admin ise true</returns>
+    public bool IsAdmin()
+    {
+        var adminRoles = new[] { "Admin", "Administrator", "SuperAdmin" };
+
+        return UserRoles
+            .Any(ur => ur.Role != null &&
+                       ur.Role.IsActive &&
+                       adminRoles.Contains(ur.Role.Name, StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// User'ın role ve permission bilgilerinin summary'sini getir
+    /// 
+    /// Debug, logging ve audit purposes için kullanılır.
+    /// Production'da performance overhead olabileceği için dikkatli kullanılmalı.
+    /// </summary>
+    /// <returns>User'ın authorization summary'si</returns>
+    public UserAuthorizationSummary GetAuthorizationSummary()
+    {
+        var roles = GetRoleNames().ToList();
+        var permissions = GetPermissions().ToList();
+
+        return new UserAuthorizationSummary
+        {
+            UserId = Id,
+            Email = Email?.Value ?? "Unknown",
+            RoleCount = roles.Count,
+            PermissionCount = permissions.Count,
+            Roles = roles,
+            Permissions = permissions,
+            IsAdmin = IsAdmin(),
+            HasAnyRole = roles.Any(),
+            HasAnyPermission = permissions.Any()
+        };
     }
 
     /// <summary>
@@ -366,6 +479,24 @@ public class User : BaseEntity
     /// Full name property
     /// </summary>
     public string FullName => $"{FirstName} {LastName}";
+
+    // Supporting DTO class - Application/Models klasörüne konulacak
+    /// <summary>
+    /// User Authorization Summary DTO
+    /// Debug ve monitoring purposes için kullanılır
+    /// </summary>
+    public class UserAuthorizationSummary
+    {
+        public Guid UserId { get; set; }
+        public string Email { get; set; } = string.Empty;
+        public int RoleCount { get; set; }
+        public int PermissionCount { get; set; }
+        public List<string> Roles { get; set; } = new();
+        public List<string> Permissions { get; set; } = new();
+        public bool IsAdmin { get; set; }
+        public bool HasAnyRole { get; set; }
+        public bool HasAnyPermission { get; set; }
+    }
 
     #endregion
 

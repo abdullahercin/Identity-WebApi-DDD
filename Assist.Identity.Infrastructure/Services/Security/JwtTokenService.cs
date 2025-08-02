@@ -1,55 +1,39 @@
-﻿using Assist.Identity.Application.Contracts;
-using Assist.Identity.Application.Models;
-using Assist.Identity.Domain.Entities;
-using Microsoft.Extensions.Configuration;
-using Microsoft.Extensions.Logging;
-using Microsoft.IdentityModel.Tokens;
-using System.IdentityModel.Tokens.Jwt;
+﻿using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 using System.Security.Cryptography;
 using System.Text;
+using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.Logging;
+using Microsoft.IdentityModel.Tokens;
+using Assist.Identity.Application.Contracts;
+using Assist.Identity.Application.Models;
+using Assist.Identity.Domain.Entities;
 
 namespace Assist.Identity.Infrastructure.Services.Security;
 
 /// <summary>
-/// JWT Token Service Implementation
+/// JWT Token Service Implementation - Interface Compliant
 /// 
-/// Bu service JWT (JSON Web Token) generation, validation ve parsing'i handle eder.
-/// Modern web uygulamalarında stateless authentication için kritik bir component'tir.
+/// Bu implementation ITokenService interface'ine tam uyumlu.
+/// User entity'sindeki domain methods'ları kullanarak roles ve permissions alır.
 /// 
-/// JWT Benefits Over Traditional Sessions:
-/// 1. Stateless: Server'da session bilgisi tutma ihtiyacı yok
-/// 2. Scalable: Multiple server'lar arasında session sharing problemi yok
-/// 3. Cross-Platform: Mobile, web, API'lar aynı token'ı kullanabilir
-/// 4. Self-Contained: Token içinde user bilgileri mevcut, database lookup gereksiz
-/// 5. Secure: Cryptographic signing ile token integrity garantili
-/// 
-/// JWT Structure:
-/// Header.Payload.Signature
-/// - Header: Algorithm ve token type bilgisi
-/// - Payload: User claims (ID, email, roles, permissions, expiration)
-/// - Signature: Token'ın değiştirilmediğini garanti eden cryptographic signature
-/// 
-/// Security Considerations:
-/// - Secret key güvenli şekilde store edilmeli (Environment variables, Azure Key Vault)
-/// - Token expiration time reasonable olmalı (çok uzun güvenlik riski, çok kısa UX problemi)
-/// - Sensitive bilgiler payload'da olmamalı (password, personal data)
-/// - HTTPS kullanımı mandatory (token hijacking prevention)
+/// Key Changes:
+/// 1. GenerateAccessTokenAsync sadece User entity alır (interface'e uygun)
+/// 2. User.GetRoleNames() ve User.GetPermissions() domain methods kullanır
+/// 3. Eksik method'lar implement edildi (GetUserIdFromTokenAsync, GetTokenExpirationAsync)
+/// 4. JwtSettings class'ı ve dependencies düzeltildi
 /// </summary>
 public class JwtTokenService : ITokenService
 {
     private readonly IConfiguration _configuration;
     private readonly ILogger<JwtTokenService> _logger;
     private readonly JwtSettings _jwtSettings;
+    private readonly TokenValidationParameters _tokenValidationParameters;
 
     /// <summary>
     /// JwtTokenService constructor
-    /// 
-    /// Configuration'dan JWT settings'leri alır ve validate eder.
-    /// Fail-fast principle: Invalid configuration application'ı başlatmaz.
+    /// Configuration'dan JWT settings'leri alır ve validate eder
     /// </summary>
-    /// <param name="configuration">Application configuration</param>
-    /// <param name="logger">Structured logging interface</param>
     public JwtTokenService(IConfiguration configuration, ILogger<JwtTokenService> logger)
     {
         _configuration = configuration ?? throw new ArgumentNullException(nameof(configuration));
@@ -59,69 +43,44 @@ public class JwtTokenService : ITokenService
         _jwtSettings = LoadJwtSettings();
         ValidateJwtSettings();
 
+        // Setup token validation parameters
+        _tokenValidationParameters = CreateTokenValidationParameters();
+
         _logger.LogInformation("JwtTokenService initialized with issuer: {Issuer}", _jwtSettings.Issuer);
     }
 
     #region Token Generation
 
     /// <summary>
-    /// Access token generation
+    /// Access token generation - Interface compliant
     /// 
-    /// Access token workflow:
-    /// 1. User'ın temel bilgilerini claims'lere çevir
-    /// 2. Roles ve permissions'ları token'a embed et
-    /// 3. Expiration time set et (genelde 15-60 dakika)
-    /// 4. Token'ı cryptographic olarak sign et
-    /// 5. Base64 encoded JWT string döndür
+    /// DDD Approach: User entity üzerindeki domain methods kullanılır
+    /// - User.GetRoleNames() → roles for authorization
+    /// - User.GetPermissions() → fine-grained permissions
     /// 
-    /// Token içeriği:
-    /// - Standard claims: sub (subject), iat (issued at), exp (expiration)
-    /// - Custom claims: email, tenant_id, roles, permissions
-    /// - Security claims: jti (JWT ID) for token tracking
-    /// 
-    /// Performance considerations:
-    /// - Token size: Çok fazla claim token size'ını artırır
-    /// - Network overhead: Her request'te token gönderilir
-    /// - Parsing cost: Token her request'te parse edilir
+    /// Bu approach'ın avantajları:
+    /// 1. Business logic domain layer'da kalır
+    /// 2. Interface clean ve simple
+    /// 3. Token service business rules'ları bilmez
+    /// 4. User entity kendi responsibility'lerini handle eder
     /// </summary>
-    public async Task<string> GenerateAccessTokenAsync(User user, IEnumerable<string> roles, IEnumerable<string> permissions, CancellationToken cancellationToken = default)
+    public async Task<string> GenerateAccessTokenAsync(User user, CancellationToken cancellationToken = default)
     {
         try
         {
             _logger.LogDebug("Generating access token for user: {UserId}", user.Id);
 
-            // JWT Claims - token içinde carry edilecek bilgiler
-            var claims = new List<Claim>
-            {
-                // Standard JWT claims (RFC 7519)
-                new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),           // Subject: User ID
-                new(JwtRegisteredClaimNames.Email, user.Email.Value!),          // Email address
-                new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),    // JWT ID: Unique token identifier
-                new(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64), // Issued at
-                
-                // Custom application claims
-                new("tenant_id", user.TenantId.ToString()),                     // Multi-tenancy support
-                new("first_name", user.FirstName),                             // User display name
-                new("last_name", user.LastName),                               // User display name
-                new("full_name", user.FullName),                               // Computed full name
-                new("email_confirmed", user.EmailConfirmed.ToString().ToLower()) // Email verification status
-            };
+            // Domain methods kullanarak roles ve permissions al
+            var roles = user.GetRoleNames().ToList();
+            var permissions = user.GetPermissions().ToList();
 
-            // Add roles as multiple claims (standard approach)
-            // This allows ASP.NET Core authorization to work seamlessly
-            foreach (var role in roles)
-            {
-                claims.Add(new Claim(ClaimTypes.Role, role));
-            }
+            _logger.LogDebug("User {UserId} has {RoleCount} roles and {PermissionCount} permissions",
+                user.Id, roles.Count, permissions.Count);
 
-            // Add permissions as custom claims
-            // Permissions için custom claim type kullanıyoruz
-            foreach (var permission in permissions)
-            {
-                claims.Add(new Claim("permission", permission));
-            }
+            // JWT Claims oluştur
+            var claims = BuildAccessTokenClaims(user, roles, permissions);
 
-            // Token descriptor - JWT creation için configuration
+            // Token descriptor
             var tokenDescriptor = new SecurityTokenDescriptor
             {
                 Subject = new ClaimsIdentity(claims),
@@ -131,7 +90,7 @@ public class JwtTokenService : ITokenService
                 SigningCredentials = new SigningCredentials(GetSigningKey(), SecurityAlgorithms.HmacSha256Signature)
             };
 
-            // JWT token generation
+            // JWT token generate et
             var tokenHandler = new JwtSecurityTokenHandler();
             var securityToken = tokenHandler.CreateToken(tokenDescriptor);
             var tokenString = tokenHandler.WriteToken(securityToken);
@@ -150,40 +109,25 @@ public class JwtTokenService : ITokenService
 
     /// <summary>
     /// Refresh token generation
-    /// 
-    /// Refresh token characteristics:
-    /// - Longer expiration time (days or weeks)
-    /// - Cryptographically secure random string
-    /// - One-time use (consumed when used)
-    /// - Stored in database for validation
-    /// - Can be revoked for security
-    /// 
-    /// Refresh token workflow:
-    /// 1. Generate cryptographically secure random string
-    /// 2. No user information embedded (unlike access token)
-    /// 3. Store in database with user association
-    /// 4. Return to client for future token refresh requests
-    /// 
-    /// Security benefits:
-    /// - Access token kısa ömürlü (15-60 dakika)
-    /// - Refresh token uzun ömürlü ama revokable
-    /// - Compromise durumunda damage limitation
+    /// Cryptographically secure random string generate eder
     /// </summary>
     public async Task<string> GenerateRefreshTokenAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            // Generate cryptographically secure random bytes
-            var randomBytes = new byte[64]; // 512 bits of entropy
+            // Cryptographically secure random bytes
+            var randomBytes = new byte[64];
             using var rng = RandomNumberGenerator.Create();
             rng.GetBytes(randomBytes);
 
-            // Convert to base64 for string representation
-            var refreshToken = Convert.ToBase64String(randomBytes);
+            // URL-safe base64 string
+            var refreshToken = Convert.ToBase64String(randomBytes)
+                .Replace("+", "-")
+                .Replace("/", "_")
+                .Replace("=", "");
 
-            _logger.LogDebug("Refresh token generated successfully, length: {Length}", refreshToken.Length);
-
-            return await Task.FromResult(refreshToken);
+            _logger.LogDebug("Refresh token generated successfully");
+            return refreshToken;
         }
         catch (Exception ex)
         {
@@ -197,25 +141,7 @@ public class JwtTokenService : ITokenService
     #region Token Validation
 
     /// <summary>
-    /// Token validation
-    /// 
-    /// Validation process:
-    /// 1. Parse JWT structure (Header.Payload.Signature)
-    /// 2. Verify cryptographic signature
-    /// 3. Check token expiration
-    /// 4. Validate issuer and audience
-    /// 5. Ensure token format compliance
-    /// 
-    /// Validation failures:
-    /// - Malformed token structure
-    /// - Invalid signature (token tampered)
-    /// - Expired token
-    /// - Wrong issuer/audience
-    /// - Missing required claims
-    /// 
-    /// Performance note:
-    /// Token validation çok frequent operation (her request'te)
-    /// Bu yüzden efficient olması kritik
+    /// Token validation - JWT signature, expiration, format kontrolü
     /// </summary>
     public async Task<bool> ValidateTokenAsync(string token, CancellationToken cancellationToken = default)
     {
@@ -229,32 +155,36 @@ public class JwtTokenService : ITokenService
 
             var tokenHandler = new JwtSecurityTokenHandler();
 
-            // Token validation parameters
-            var validationParameters = GetTokenValidationParameters();
-
-            // Validate token and extract principal
-            var principal = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
-
-            // Additional custom validations
-            if (validatedToken is not JwtSecurityToken jwtToken)
+            // Token format kontrolü
+            if (!tokenHandler.CanReadToken(token))
             {
-                _logger.LogDebug("Token validation failed: not a valid JWT token");
+                _logger.LogDebug("Token validation failed: invalid token format");
                 return false;
             }
 
-            // Verify algorithm (prevent algorithm substitution attacks)
+            // Token validation
+            var principal = tokenHandler.ValidateToken(token, _tokenValidationParameters, out SecurityToken validatedToken);
+
+            // Additional security checks
+            if (validatedToken is not JwtSecurityToken jwtToken)
+            {
+                _logger.LogDebug("Token validation failed: not a valid JWT");
+                return false;
+            }
+
+            // Algorithm verification (prevent algorithm substitution attacks)
             if (!jwtToken.Header.Alg.Equals(SecurityAlgorithms.HmacSha256, StringComparison.InvariantCultureIgnoreCase))
             {
-                _logger.LogDebug("Token validation failed: invalid algorithm: {Algorithm}", jwtToken.Header.Alg);
+                _logger.LogWarning("Token validation failed: invalid algorithm: {Algorithm}", jwtToken.Header.Alg);
                 return false;
             }
 
             _logger.LogDebug("Token validation successful");
-            return await Task.FromResult(true);
+            return true;
         }
-        catch (SecurityTokenExpiredException ex)
+        catch (SecurityTokenExpiredException)
         {
-            _logger.LogDebug(ex, "Token validation failed: token expired");
+            _logger.LogDebug("Token validation failed: token expired");
             return false;
         }
         catch (SecurityTokenException ex)
@@ -270,113 +200,68 @@ public class JwtTokenService : ITokenService
     }
 
     /// <summary>
-    /// Extract user information from token
-    /// 
-    /// Token parsing workflow:
-    /// 1. Validate token structure ve signature
-    /// 2. Extract claims from payload
-    /// 3. Map claims to strongly-typed model
-    /// 4. Handle missing or invalid claims gracefully
-    /// 
-    /// Claims mapping:
-    /// - sub → UserId
-    /// - email → Email
-    /// - tenant_id → TenantId  
-    /// - role claims → Roles collection
-    /// - permission claims → Permissions collection
-    /// 
-    /// Error handling:
-    /// - Invalid token format
-    /// - Missing required claims
-    /// - Type conversion errors
-    /// - Expired tokens
+    /// Token'dan user bilgilerini extract etme
+    /// Authorization pipeline için TokenUserInfo oluşturur
     /// </summary>
     public async Task<TokenUserInfo?> GetUserInfoFromTokenAsync(string token, CancellationToken cancellationToken = default)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(token))
-            {
-                _logger.LogDebug("GetUserInfo failed: empty token");
                 return null;
-            }
 
             var tokenHandler = new JwtSecurityTokenHandler();
-            var validationParameters = GetTokenValidationParameters();
 
-            // Validate and parse token
-            var principal = tokenHandler.ValidateToken(token, validationParameters, out SecurityToken validatedToken);
-
-            // Extract user information from claims
-            var userInfo = new TokenUserInfo();
-
-            // Extract User ID (required claim)
-            var userIdClaim = principal.FindFirst(JwtRegisteredClaimNames.Sub);
-            if (userIdClaim == null || !Guid.TryParse(userIdClaim.Value, out var userId))
-            {
-                _logger.LogWarning("Token missing or invalid user ID claim");
+            if (!tokenHandler.CanReadToken(token))
                 return null;
-            }
-            userInfo.UserId = userId;
 
-            // Extract Email (required claim)
-            var emailClaim = principal.FindFirst(JwtRegisteredClaimNames.Email);
-            if (emailClaim == null)
-            {
-                _logger.LogWarning("Token missing email claim");
-                return null;
-            }
-            userInfo.Email = emailClaim.Value;
+            // Token validation ve claims extraction
+            var principal = tokenHandler.ValidateToken(token, _tokenValidationParameters, out _);
 
-            // Extract Tenant ID (required for multi-tenancy)
-            var tenantIdClaim = principal.FindFirst("tenant_id");
-            if (tenantIdClaim != null && Guid.TryParse(tenantIdClaim.Value, out var tenantId))
+            // Required claims extract et
+            var userIdClaim = principal.FindFirst(JwtRegisteredClaimNames.Sub)?.Value;
+            var emailClaim = principal.FindFirst(JwtRegisteredClaimNames.Email)?.Value;
+            var tenantIdClaim = principal.FindFirst("tenant_id")?.Value;
+            var firstNameClaim = principal.FindFirst("first_name")?.Value;
+            var lastNameClaim = principal.FindFirst("last_name")?.Value;
+
+            // Validation
+            if (string.IsNullOrEmpty(userIdClaim) || !Guid.TryParse(userIdClaim, out var userId) ||
+                string.IsNullOrEmpty(tenantIdClaim) || !Guid.TryParse(tenantIdClaim, out var tenantId))
             {
-                userInfo.TenantId = tenantId;
-            }
-            else
-            {
-                _logger.LogWarning("Token missing or invalid tenant ID claim");
+                _logger.LogWarning("Token contains invalid user or tenant ID claims");
                 return null;
             }
 
-            // Extract Roles
-            userInfo.Roles = principal.FindAll(ClaimTypes.Role)
-                .Select(c => c.Value)
-                .Where(r => !string.IsNullOrWhiteSpace(r))
-                .ToList();
+            // Roles ve permissions extract et
+            var roles = principal.FindAll(ClaimTypes.Role).Select(c => c.Value).ToList();
+            var permissions = principal.FindAll("permission").Select(c => c.Value).ToList();
 
-            // Extract Permissions
-            userInfo.Permissions = principal.FindAll("permission")
-                .Select(c => c.Value)
-                .Where(p => !string.IsNullOrWhiteSpace(p))
-                .ToList();
+            // Email confirmed claim extract et
+            var emailConfirmedClaim = principal.FindFirst("email_confirmed")?.Value;
+            var emailConfirmed = bool.TryParse(emailConfirmedClaim, out var confirmed) && confirmed;
 
-            _logger.LogDebug("User info extracted from token - UserId: {UserId}, Email: {Email}, Roles: {RoleCount}, Permissions: {PermissionCount}",
-                userInfo.UserId, userInfo.Email, userInfo.Roles.Count, userInfo.Permissions.Count);
-
-            return await Task.FromResult(userInfo);
-        }
-        catch (SecurityTokenException ex)
-        {
-            _logger.LogDebug(ex, "Failed to extract user info: invalid token");
-            return null;
+            return new TokenUserInfo
+            {
+                UserId = userId,
+                Email = emailClaim ?? string.Empty,
+                TenantId = tenantId,
+                FirstName = firstNameClaim ?? string.Empty,
+                LastName = lastNameClaim ?? string.Empty,
+                EmailConfirmed = emailConfirmed,
+                Roles = roles,
+                Permissions = permissions
+            };
         }
         catch (Exception ex)
         {
-            _logger.LogError(ex, "Unexpected error extracting user info from token");
+            _logger.LogError(ex, "Failed to extract user info from token");
             return null;
         }
     }
 
     /// <summary>
-    /// Check if token is expired
-    /// 
-    /// Expiration checking benefits:
-    /// - Early detection before API calls
-    /// - Client-side token refresh logic
-    /// - Proactive user experience
-    /// - Reduced server-side validation load
+    /// Token expiration kontrolü
     /// </summary>
     public async Task<bool> IsTokenExpiredAsync(string token, CancellationToken cancellationToken = default)
     {
@@ -386,20 +271,16 @@ public class JwtTokenService : ITokenService
                 return true;
 
             var tokenHandler = new JwtSecurityTokenHandler();
-            var jsonToken = tokenHandler.ReadJwtToken(token);
 
-            // Check expiration without signature validation (faster)
-            var isExpired = jsonToken.ValidTo <= DateTime.UtcNow;
+            if (!tokenHandler.CanReadToken(token))
+                return true;
 
-            _logger.LogDebug("Token expiration check - Valid until: {ValidTo}, Is expired: {IsExpired}",
-                jsonToken.ValidTo, isExpired);
-
-            return await Task.FromResult(isExpired);
+            var jwtToken = tokenHandler.ReadJwtToken(token);
+            return jwtToken.ValidTo <= DateTime.UtcNow;
         }
-        catch (Exception ex)
+        catch
         {
-            _logger.LogError(ex, "Error checking token expiration");
-            return true; // Assume expired if cannot parse
+            return true; // Fail secure
         }
     }
 
@@ -408,54 +289,35 @@ public class JwtTokenService : ITokenService
     #region Token Management
 
     /// <summary>
-    /// Token revocation
-    /// 
-    /// JWT stateless nature makes revocation challenging:
-    /// - JWT'ler inherently stateless (server'da token list yok)
-    /// - Revocation için token blacklist gerekiyor
-    /// - Redis cache ideal blacklist storage
-    /// - Blacklist check her validation'da yapılmalı
-    /// 
-    /// Revocation strategies:
-    /// 1. Blacklist approach (implement burada)
-    /// 2. Short expiration + refresh pattern
-    /// 3. Token versioning
-    /// 4. External token validation service
+    /// Token revocation - Blacklist approach
+    /// JWT'nin stateless nature nedeniyle revocation challenging
     /// </summary>
     public async Task RevokeTokenAsync(string token, CancellationToken cancellationToken = default)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(token))
-            {
-                _logger.LogDebug("Cannot revoke empty token");
                 return;
-            }
 
             var tokenHandler = new JwtSecurityTokenHandler();
-            var jsonToken = tokenHandler.ReadJwtToken(token);
 
-            // Extract JTI (JWT ID) for blacklisting
-            var jtiClaim = jsonToken.Claims.FirstOrDefault(c => c.Type == JwtRegisteredClaimNames.Jti);
-            if (jtiClaim == null)
-            {
-                _logger.LogWarning("Cannot revoke token: missing JTI claim");
+            if (!tokenHandler.CanReadToken(token))
                 return;
+
+            var jwtToken = tokenHandler.ReadJwtToken(token);
+            var jti = jwtToken.Claims.FirstOrDefault(c => c.Type == JwtRegisteredClaimNames.Jti)?.Value;
+
+            if (!string.IsNullOrEmpty(jti))
+            {
+                // TODO: Implement blacklist with cache service
+                // For now, just log the revocation
+                _logger.LogInformation("Token revoked - JTI: {JTI}, Expires: {Expiration}", jti, jwtToken.ValidTo);
+
+                // Bu implementation cache service gerektirir:
+                // var blacklistKey = $"revoked_token:{jti}";
+                // var expirationTime = jwtToken.ValidTo - DateTime.UtcNow;
+                // await _cacheService.SetAsync(blacklistKey, "revoked", expirationTime, cancellationToken);
             }
-
-            var jti = jtiClaim.Value;
-            var expiration = jsonToken.ValidTo;
-
-            // Add to blacklist with appropriate expiration
-            // Note: Bu implementation ICacheService gerektirir
-            // Şimdilik placeholder, gerçek implementation cache service ile yapılacak
-
-            _logger.LogInformation("Token revoked - JTI: {JTI}, Expires: {Expiration}", jti, expiration);
-
-            // TODO: Implement blacklist storage
-            // await _cacheService.SetAsync($"blacklist:{jti}", true, expiration - DateTime.UtcNow);
-
-            await Task.CompletedTask;
         }
         catch (Exception ex)
         {
@@ -465,18 +327,8 @@ public class JwtTokenService : ITokenService
     }
 
     /// <summary>
-    /// Revoke all tokens for a specific user
-    /// 
-    /// Use cases:
-    /// - Password change (security measure)
-    /// - Account deactivation
-    /// - Suspicious activity detection
-    /// - Admin action (force logout)
-    /// 
-    /// Implementation strategy:
-    /// - User-based token versioning
-    /// - Increment user token version
-    /// - Validate token version on each request
+    /// User'ın tüm token'larını revoke etme
+    /// Password change, security breach durumlarında
     /// </summary>
     public async Task RevokeAllUserTokensAsync(Guid userId, CancellationToken cancellationToken = default)
     {
@@ -484,17 +336,74 @@ public class JwtTokenService : ITokenService
         {
             _logger.LogInformation("Revoking all tokens for user: {UserId}", userId);
 
-            // TODO: Implement user token version strategy
-            // 1. Increment user token version in database
-            // 2. Add user to "force logout" list with timestamp
-            // 3. Validate user token version on each request
+            // TODO: Implement user-based token versioning strategy
+            // Options:
+            // 1. User token version field'ı increment et
+            // 2. User security stamp update et
+            // 3. Cache-based force logout list
 
-            await Task.CompletedTask;
+            await Task.CompletedTask; // Placeholder
         }
         catch (Exception ex)
         {
             _logger.LogError(ex, "Failed to revoke all user tokens for user: {UserId}", userId);
-            throw new InvalidOperationException($"User token revocation failed: {ex.Message}", ex);
+            throw new InvalidOperationException($"Token revocation failed: {ex.Message}", ex);
+        }
+    }
+
+    #endregion
+
+    #region Token Utilities
+
+    /// <summary>
+    /// Token'dan user ID extract etme - Quick access
+    /// </summary>
+    public async Task<Guid?> GetUserIdFromTokenAsync(string token, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+
+            var tokenHandler = new JwtSecurityTokenHandler();
+
+            if (!tokenHandler.CanReadToken(token))
+                return null;
+
+            // Direct claim access (no full validation for performance)
+            var jwtToken = tokenHandler.ReadJwtToken(token);
+            var userIdClaim = jwtToken.Claims.FirstOrDefault(c => c.Type == JwtRegisteredClaimNames.Sub)?.Value;
+
+            return Guid.TryParse(userIdClaim, out var userId) ? userId : null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Token expiration time'ını getirme
+    /// Client-side token management için
+    /// </summary>
+    public async Task<DateTime?> GetTokenExpirationAsync(string token, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            if (string.IsNullOrWhiteSpace(token))
+                return null;
+
+            var tokenHandler = new JwtSecurityTokenHandler();
+
+            if (!tokenHandler.CanReadToken(token))
+                return null;
+
+            var jwtToken = tokenHandler.ReadJwtToken(token);
+            return jwtToken.ValidTo;
+        }
+        catch
+        {
+            return null;
         }
     }
 
@@ -503,99 +412,102 @@ public class JwtTokenService : ITokenService
     #region Private Helper Methods
 
     /// <summary>
-    /// Load JWT settings from configuration
-    /// 
-    /// Configuration structure:
-    /// {
-    ///   "JWT": {
-    ///     "SecretKey": "your-secret-key-here",
-    ///     "Issuer": "YourApp",
-    ///     "Audience": "YourApp-Users", 
-    ///     "AccessTokenExpirationMinutes": 60,
-    ///     "RefreshTokenExpirationDays": 30
-    ///   }
-    /// }
+    /// JWT claims builder - Token content oluşturur
+    /// </summary>
+    private List<Claim> BuildAccessTokenClaims(User user, List<string> roles, List<string> permissions)
+    {
+        var claims = new List<Claim>
+        {
+            // Standard JWT claims
+            new(JwtRegisteredClaimNames.Sub, user.Id.ToString()),
+            new(JwtRegisteredClaimNames.Email, user.Email?.Value ?? string.Empty),
+            new(JwtRegisteredClaimNames.Jti, Guid.NewGuid().ToString()),
+            new(JwtRegisteredClaimNames.Iat, DateTimeOffset.UtcNow.ToUnixTimeSeconds().ToString(), ClaimValueTypes.Integer64),
+            
+            // Custom application claims
+            new("tenant_id", user.TenantId.ToString()),
+            new("first_name", user.FirstName ?? string.Empty),
+            new("last_name", user.LastName ?? string.Empty),
+            new("email_confirmed", user.EmailConfirmed.ToString().ToLower())
+        };
+
+        // Role claims
+        foreach (var role in roles)
+        {
+            claims.Add(new Claim(ClaimTypes.Role, role));
+        }
+
+        // Permission claims
+        foreach (var permission in permissions)
+        {
+            claims.Add(new Claim("permission", permission));
+        }
+
+        return claims;
+    }
+
+    /// <summary>
+    /// JWT settings configuration'dan yükleme
     /// </summary>
     private JwtSettings LoadJwtSettings()
     {
         return new JwtSettings
         {
-            SecretKey = _configuration["JWT:SecretKey"] ?? GenerateDefaultSecretKey(),
-            Issuer = _configuration["JWT:Issuer"] ?? "Assist.Identity",
-            Audience = _configuration["JWT:Audience"] ?? "Assist.Identity.Users",
+            SecretKey = _configuration["JWT:SecretKey"] ??
+                throw new InvalidOperationException("JWT:SecretKey configuration is missing"),
+            Issuer = _configuration["JWT:Issuer"] ??
+                throw new InvalidOperationException("JWT:Issuer configuration is missing"),
+            Audience = _configuration["JWT:Audience"] ??
+                throw new InvalidOperationException("JWT:Audience configuration is missing"),
             AccessTokenExpirationMinutes = int.Parse(_configuration["JWT:AccessTokenExpirationMinutes"] ?? "60"),
-            RefreshTokenExpirationDays = int.Parse(_configuration["JWT:RefreshTokenExpirationDays"] ?? "30")
+            RefreshTokenExpirationDays = int.Parse(_configuration["JWT:RefreshTokenExpirationDays"] ?? "7")
         };
     }
 
     /// <summary>
-    /// Generate default secret key for development
-    /// Production'da environment variable veya secure storage kullanılmalı
-    /// </summary>
-    private string GenerateDefaultSecretKey()
-    {
-        _logger.LogWarning("JWT SecretKey not configured, generating default key for development");
-
-        // Generate 256-bit key for HMAC-SHA256
-        var key = new byte[32];
-        using var rng = RandomNumberGenerator.Create();
-        rng.GetBytes(key);
-
-        return Convert.ToBase64String(key);
-    }
-
-    /// <summary>
-    /// Validate JWT configuration
-    /// Fail-fast principle: invalid configuration prevents application startup
+    /// JWT settings validation
     /// </summary>
     private void ValidateJwtSettings()
     {
-        if (string.IsNullOrWhiteSpace(_jwtSettings.SecretKey))
-            throw new InvalidOperationException("JWT SecretKey is required");
-
-        if (_jwtSettings.SecretKey.Length < 32)
-            throw new InvalidOperationException("JWT SecretKey must be at least 32 characters");
+        if (string.IsNullOrWhiteSpace(_jwtSettings.SecretKey) || _jwtSettings.SecretKey.Length < 32)
+            throw new InvalidOperationException("JWT SecretKey must be at least 32 characters long");
 
         if (string.IsNullOrWhiteSpace(_jwtSettings.Issuer))
-            throw new InvalidOperationException("JWT Issuer is required");
+            throw new InvalidOperationException("JWT Issuer cannot be empty");
 
         if (string.IsNullOrWhiteSpace(_jwtSettings.Audience))
-            throw new InvalidOperationException("JWT Audience is required");
+            throw new InvalidOperationException("JWT Audience cannot be empty");
 
-        if (_jwtSettings.AccessTokenExpirationMinutes <= 0 || _jwtSettings.AccessTokenExpirationMinutes > 1440)
-            throw new InvalidOperationException("JWT AccessTokenExpirationMinutes must be between 1-1440 minutes");
+        if (_jwtSettings.AccessTokenExpirationMinutes <= 0)
+            throw new InvalidOperationException("JWT AccessTokenExpirationMinutes must be positive");
 
-        if (_jwtSettings.RefreshTokenExpirationDays <= 0 || _jwtSettings.RefreshTokenExpirationDays > 365)
-            throw new InvalidOperationException("JWT RefreshTokenExpirationDays must be between 1-365 days");
+        if (_jwtSettings.RefreshTokenExpirationDays <= 0)
+            throw new InvalidOperationException("JWT RefreshTokenExpirationDays must be positive");
     }
 
     /// <summary>
-    /// Get signing key for token creation and validation
+    /// Signing key oluşturma
     /// </summary>
     private SymmetricSecurityKey GetSigningKey()
     {
-        var keyBytes = Encoding.UTF8.GetBytes(_jwtSettings.SecretKey);
-        return new SymmetricSecurityKey(keyBytes);
+        return new SymmetricSecurityKey(Encoding.UTF8.GetBytes(_jwtSettings.SecretKey));
     }
 
     /// <summary>
-    /// Get token validation parameters
-    /// Centralized validation configuration
+    /// Token validation parameters oluşturma
     /// </summary>
-    private TokenValidationParameters GetTokenValidationParameters()
+    private TokenValidationParameters CreateTokenValidationParameters()
     {
         return new TokenValidationParameters
         {
-            ValidateIssuerSigningKey = true,
-            IssuerSigningKey = GetSigningKey(),
             ValidateIssuer = true,
-            ValidIssuer = _jwtSettings.Issuer,
             ValidateAudience = true,
-            ValidAudience = _jwtSettings.Audience,
             ValidateLifetime = true,
-            ClockSkew = TimeSpan.FromMinutes(5), // Allow 5 minutes clock skew
-            RequireExpirationTime = true,
-            RequireSignedTokens = true
+            ValidateIssuerSigningKey = true,
+            ValidIssuer = _jwtSettings.Issuer,
+            ValidAudience = _jwtSettings.Audience,
+            IssuerSigningKey = GetSigningKey(),
+            ClockSkew = TimeSpan.Zero // Exact expiration time validation
         };
     }
 
@@ -603,10 +515,10 @@ public class JwtTokenService : ITokenService
 }
 
 /// <summary>
-/// JWT Configuration Settings
-/// Internal configuration model for JWT service
+/// JWT Settings Configuration Class
+/// appsettings.json'dan JWT configuration'ı map etmek için
 /// </summary>
-internal class JwtSettings
+public class JwtSettings
 {
     public string SecretKey { get; set; } = null!;
     public string Issuer { get; set; } = null!;

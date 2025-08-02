@@ -1,12 +1,13 @@
 ﻿using Assist.Identity.Application.Contracts;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.Logging;
+using System.IdentityModel.Tokens.Jwt;
 using System.Security.Claims;
 
 namespace Assist.Identity.Infrastructure.Services.Security;
 
 /// <summary>
-/// Current User Service Implementation
+/// Current User Service Implementation - Complete
 /// 
 /// Bu service HTTP request context'inden user bilgilerini extract eder ve
 /// application layer'a clean bir interface ile sunar.
@@ -35,8 +36,8 @@ namespace Assist.Identity.Infrastructure.Services.Security;
 /// Performance Considerations:
 /// - HTTP context access lightweight operation
 /// - Claims parsing minimal overhead
-/// - Caching gerekmiyor (request scope'unda single access)
-/// - Lazy evaluation pattern kullanılabilir
+/// - Lazy evaluation pattern (tek seferde load edilir)
+/// - Request scope'unda cache edilir
 /// </summary>
 public class CurrentUserService : ICurrentUserService
 {
@@ -47,8 +48,12 @@ public class CurrentUserService : ICurrentUserService
     // HTTP context'e sadece ihtiyaç duyulduğunda access edilir
     private Guid? _userId;
     private string? _email;
+    private string? _firstName;
+    private string? _lastName;
+    private Guid? _tenantId;
     private List<string>? _roles;
     private List<string>? _permissions;
+    private bool? _emailConfirmed;
     private bool _propertiesLoaded = false;
 
     /// <summary>
@@ -127,6 +132,70 @@ public class CurrentUserService : ICurrentUserService
     }
 
     /// <summary>
+    /// Current user first name
+    /// 
+    /// JWT claims mapping:
+    /// - Custom claim: "first_name" → First name
+    /// - UI personalization için kullanılır
+    /// 
+    /// Use cases:
+    /// - Welcome messages: "Hello, John!"
+    /// - User profile display
+    /// - Personalized communications
+    /// </summary>
+    public string? FirstName
+    {
+        get
+        {
+            EnsurePropertiesLoaded();
+            return _firstName;
+        }
+    }
+
+    /// <summary>
+    /// Current user last name
+    /// 
+    /// JWT claims mapping:
+    /// - Custom claim: "last_name" → Last name
+    /// - Full name construction için kullanılır
+    /// 
+    /// Use cases:
+    /// - Formal communication
+    /// - Full name display
+    /// - Professional identification
+    /// </summary>
+    public string? LastName
+    {
+        get
+        {
+            EnsurePropertiesLoaded();
+            return _lastName;
+        }
+    }
+
+    /// <summary>
+    /// Current user tenant ID
+    /// 
+    /// JWT claims mapping:
+    /// - Custom claim: "tenant_id" → Tenant ID
+    /// - Multi-tenancy için kritik bilgi
+    /// 
+    /// Use cases:
+    /// - Data filtering (tenant-specific data)
+    /// - Authorization checks (tenant ownership)
+    /// - Multi-tenant operations
+    /// - Tenant context validation
+    /// </summary>
+    public Guid? TenantId
+    {
+        get
+        {
+            EnsurePropertiesLoaded();
+            return _tenantId;
+        }
+    }
+
+    /// <summary>
     /// Current user roles
     /// 
     /// JWT claims mapping:
@@ -191,16 +260,15 @@ public class CurrentUserService : ICurrentUserService
     /// 3. User identity is authenticated
     /// 4. Valid user ID claim exists
     /// 
-    /// Usage scenarios:
-    /// - Authorization guards
-    /// - Conditional UI rendering
-    /// - API access control
-    /// - Redirect logic (login required)
+    /// Background operations:
+    /// - System operations: false (expected)
+    /// - Background jobs: false (expected)
+    /// - Console applications: false (expected)
     /// 
-    /// Security note:
-    /// - Authentication ≠ Authorization
-    /// - Authenticated user may not have permissions for specific operations
-    /// - Always check both authentication and authorization
+    /// Error scenarios:
+    /// - Invalid JWT token: false
+    /// - Expired token: false (handled by middleware)
+    /// - Missing claims: false
     /// </summary>
     public bool IsAuthenticated
     {
@@ -210,121 +278,146 @@ public class CurrentUserService : ICurrentUserService
             {
                 var httpContext = _httpContextAccessor.HttpContext;
 
-                // Background operations veya initialization phase
-                if (httpContext == null)
-                {
-                    _logger.LogDebug("HTTP context not available - likely background operation");
+                // Background operations or system context
+                if (httpContext?.User == null)
                     return false;
-                }
 
-                // User principal check
                 var user = httpContext.User;
-                if (user == null || user.Identity == null)
-                {
-                    _logger.LogDebug("User principal not available");
-                    return false;
-                }
 
-                // Authentication status check
-                if (!user.Identity.IsAuthenticated)
-                {
-                    _logger.LogDebug("User identity not authenticated");
+                // Check authentication status
+                if (!user.Identity?.IsAuthenticated == true)
                     return false;
-                }
 
-                // Valid user ID check (business requirement)
-                var userIdClaim = user.FindFirst(ClaimTypes.NameIdentifier) ?? user.FindFirst("sub");
-                if (userIdClaim == null || !Guid.TryParse(userIdClaim.Value, out _))
-                {
-                    _logger.LogDebug("Valid user ID claim not found");
-                    return false;
-                }
+                // Verify user has valid claims (additional validation)
+                var userIdClaim = user.FindFirst(JwtRegisteredClaimNames.Sub) ??
+                                user.FindFirst(ClaimTypes.NameIdentifier);
 
-                return true;
+                // Must have valid user ID claim
+                return userIdClaim != null && Guid.TryParse(userIdClaim.Value, out _);
             }
             catch (Exception ex)
             {
-                _logger.LogError(ex, "Error checking authentication status");
-                return false; // Fail secure: deny access on errors
+                _logger.LogWarning(ex, "Error checking authentication status");
+                return false; // Fail secure
             }
+        }
+    }
+
+    /// <summary>
+    /// Email confirmation status
+    /// 
+    /// JWT claims mapping:
+    /// - Custom claim: "email_confirmed" → Boolean value
+    /// - Security validation için kullanılır
+    /// 
+    /// Business rules:
+    /// - Unconfirmed users may have limited access
+    /// - Some operations require confirmed email
+    /// - Security notifications may be restricted
+    /// </summary>
+    public bool EmailConfirmed
+    {
+        get
+        {
+            EnsurePropertiesLoaded();
+            return _emailConfirmed ?? false;
         }
     }
 
     #endregion
 
-    #region Public Methods - Business Logic Operations
+    #region Computed Properties
 
     /// <summary>
-    /// Multi-tenant authorization check
+    /// Full name computed property
+    /// FirstName ve LastName'i intelligent şekilde birleştirir
+    /// </summary>
+    public string? FullName
+    {
+        get
+        {
+            EnsurePropertiesLoaded();
+
+            if (!string.IsNullOrWhiteSpace(_firstName) && !string.IsNullOrWhiteSpace(_lastName))
+                return $"{_firstName} {_lastName}";
+
+            if (!string.IsNullOrWhiteSpace(_firstName))
+                return _firstName;
+
+            if (!string.IsNullOrWhiteSpace(_lastName))
+                return _lastName;
+
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Display name - UI için optimize edilmiş name
+    /// </summary>
+    public string DisplayName
+    {
+        get
+        {
+            var fullName = FullName;
+            if (!string.IsNullOrWhiteSpace(fullName))
+                return fullName;
+
+            if (!string.IsNullOrWhiteSpace(Email))
+                return Email;
+
+            return "User";
+        }
+    }
+
+    #endregion
+
+    #region Authorization Methods
+
+    /// <summary>
+    /// Tenant ownership validation
     /// 
-    /// Multi-tenancy security is critical:
-    /// - Users can only access their tenant's data
-    /// - Cross-tenant data access is security violation
-    /// - System operations may bypass tenant checks
-    /// 
-    /// Validation logic:
-    /// 1. Check if user is authenticated
-    /// 2. Extract tenant ID from JWT claims
-    /// 3. Compare with requested tenant ID
-    /// 4. Handle system operations (no user context)
-    /// 
-    /// Security implications:
-    /// - Data isolation between tenants
-    /// - Prevent data leakage
-    /// - Compliance requirements (GDPR, HIPAA)
-    /// - Audit trail for cross-tenant attempts
+    /// Multi-tenancy security:
+    /// - User sadece kendi tenant'ının datasına erişebilir
+    /// - Cross-tenant access prevented
+    /// - Security audit logging
     /// 
     /// Use cases:
-    /// - Repository-level filtering
-    /// - API endpoint authorization
-    /// - Data export/import operations
-    /// - Admin panel access control
+    /// - Repository queries (automatic tenant filtering)
+    /// - API authorization (tenant-specific operations)
+    /// - Data validation (ownership checks)
+    /// - Security boundary enforcement
+    /// 
+    /// Error handling:
+    /// - User not authenticated → false
+    /// - Missing tenant claim → false (security concern)
+    /// - Invalid tenant ID format → false
+    /// - Cross-tenant attempt → false (log warning)
     /// </summary>
-    /// <param name="tenantId">Tenant ID to check access for</param>
-    /// <returns>True if user belongs to tenant or is system operation</returns>
+    /// <param name="tenantId">Requested tenant ID for access validation</param>
+    /// <returns>True if user belongs to specified tenant</returns>
     public bool BelongsToTenant(Guid tenantId)
     {
         try
         {
-            // System operations (background jobs, migrations)
-            // Tenant check skip edilebilir ama log edilmeli
-            if (!IsAuthenticated)
+            EnsurePropertiesLoaded();
+
+            // User not authenticated
+            if (!IsAuthenticated || _tenantId == null)
             {
-                _logger.LogDebug("Tenant check for unauthenticated context - likely system operation");
-                return true; // System operations bypass tenant checks
+                _logger.LogDebug("Tenant validation failed: user not authenticated or no tenant info");
+                return false;
             }
 
-            var httpContext = _httpContextAccessor.HttpContext;
-            if (httpContext?.User == null)
-            {
-                _logger.LogDebug("HTTP context or user not available for tenant check");
-                return true; // System context
-            }
-
-            // Extract tenant ID from JWT claims
-            var tenantClaim = httpContext.User.FindFirst("tenant_id");
-            if (tenantClaim == null)
-            {
-                _logger.LogWarning("Tenant ID claim not found in user token - security concern");
-                return false; // Fail secure: deny access
-            }
-
-            if (!Guid.TryParse(tenantClaim.Value, out var userTenantId))
-            {
-                _logger.LogWarning("Invalid tenant ID format in user token: {TenantClaim}", tenantClaim.Value);
-                return false; // Fail secure: deny access
-            }
-
-            var belongsToTenant = userTenantId == tenantId;
+            var belongsToTenant = _tenantId == tenantId;
 
             if (!belongsToTenant)
             {
                 _logger.LogWarning("Cross-tenant access attempt - User tenant: {UserTenant}, Requested tenant: {RequestedTenant}, User: {UserId}",
-                    userTenantId, tenantId, UserId);
+                    _tenantId, tenantId, _userId);
             }
             else
             {
-                _logger.LogDebug("Tenant access validated - User: {UserId}, Tenant: {TenantId}", UserId, tenantId);
+                _logger.LogDebug("Tenant access validated - User: {UserId}, Tenant: {TenantId}", _userId, tenantId);
             }
 
             return belongsToTenant;
@@ -334,6 +427,87 @@ public class CurrentUserService : ICurrentUserService
             _logger.LogError(ex, "Error during tenant validation for tenant: {TenantId}", tenantId);
             return false; // Fail secure: deny access on errors
         }
+    }
+
+    /// <summary>
+    /// Role check utility method
+    /// Specific bir role'ün varlığını kontrol eder
+    /// </summary>
+    /// <param name="roleName">Kontrol edilecek role adı</param>
+    /// <returns>Role varsa true</returns>
+    public bool HasRole(string roleName)
+    {
+        if (string.IsNullOrWhiteSpace(roleName))
+            return false;
+
+        return Roles.Any(r => r.Equals(roleName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Permission check utility method
+    /// Specific bir permission'ın varlığını kontrol eder
+    /// </summary>
+    /// <param name="permissionName">Kontrol edilecek permission adı</param>
+    /// <returns>Permission varsa true</returns>
+    public bool HasPermission(string permissionName)
+    {
+        if (string.IsNullOrWhiteSpace(permissionName))
+            return false;
+
+        return Permissions.Any(p => p.Equals(permissionName, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Admin role check
+    /// Admin, Administrator, SuperAdmin role'lerinden birini kontrol eder
+    /// </summary>
+    /// <returns>Admin role'ü varsa true</returns>
+    public bool IsAdmin()
+    {
+        var adminRoles = new[] { "Admin", "Administrator", "SuperAdmin" };
+        return Roles.Any(r => adminRoles.Contains(r, StringComparer.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// Multiple role check utility
+    /// Verilen role'lerden herhangi birine sahip mi kontrol eder
+    /// </summary>
+    /// <param name="roleNames">Kontrol edilecek role adları</param>
+    /// <returns>Herhangi bir role varsa true</returns>
+    public bool HasAnyRole(params string[] roleNames)
+    {
+        if (roleNames == null || roleNames.Length == 0)
+            return false;
+
+        return roleNames.Any(HasRole);
+    }
+
+    /// <summary>
+    /// Multiple permission check utility
+    /// Verilen permission'lardan herhangi birine sahip mi kontrol eder
+    /// </summary>
+    /// <param name="permissionNames">Kontrol edilecek permission adları</param>
+    /// <returns>Herhangi bir permission varsa true</returns>
+    public bool HasAnyPermission(params string[] permissionNames)
+    {
+        if (permissionNames == null || permissionNames.Length == 0)
+            return false;
+
+        return permissionNames.Any(HasPermission);
+    }
+
+    /// <summary>
+    /// All permissions check utility
+    /// Verilen tüm permission'lara sahip mi kontrol eder
+    /// </summary>
+    /// <param name="permissionNames">Kontrol edilecek permission adları</param>
+    /// <returns>Tüm permission'lar varsa true</returns>
+    public bool HasAllPermissions(params string[] permissionNames)
+    {
+        if (permissionNames == null || permissionNames.Length == 0)
+            return true; // Vacuous truth
+
+        return permissionNames.All(HasPermission);
     }
 
     #endregion
@@ -408,7 +582,7 @@ public class CurrentUserService : ICurrentUserService
     /// 
     /// Claims mapping strategy:
     /// - Standard claims: "sub", "email" (JWT registered claims)
-    /// - Custom claims: "tenant_id", "permission" (application-specific)
+    /// - Custom claims: "tenant_id", "permission", "first_name", "last_name" (application-specific)
     /// - Multiple value claims: roles, permissions (array handling)
     /// 
     /// Error handling approach:
@@ -420,67 +594,105 @@ public class CurrentUserService : ICurrentUserService
     /// <param name="user">ClaimsPrincipal from HTTP context</param>
     private void ExtractUserProperties(ClaimsPrincipal user)
     {
-        // Extract User ID
-        var userIdClaim = user.FindFirst(ClaimTypes.NameIdentifier) ?? user.FindFirst("sub");
+        // Extract User ID - en kritik claim
+        var userIdClaim = user.FindFirst(JwtRegisteredClaimNames.Sub) ??
+                         user.FindFirst(ClaimTypes.NameIdentifier);
+
         if (userIdClaim != null && Guid.TryParse(userIdClaim.Value, out var userId))
         {
             _userId = userId;
         }
         else
         {
-            _logger.LogWarning("User ID claim missing or invalid format");
+            _logger.LogWarning("User ID claim not found or invalid format in token");
             _userId = null;
         }
 
         // Extract Email
-        var emailClaim = user.FindFirst(ClaimTypes.Email) ?? user.FindFirst("email");
-        if (emailClaim != null && !string.IsNullOrWhiteSpace(emailClaim.Value))
+        var emailClaim = user.FindFirst(JwtRegisteredClaimNames.Email) ??
+                        user.FindFirst(ClaimTypes.Email);
+        _email = emailClaim?.Value;
+
+        // Extract First Name
+        var firstNameClaim = user.FindFirst("first_name") ??
+                            user.FindFirst(ClaimTypes.GivenName);
+        _firstName = firstNameClaim?.Value;
+
+        // Extract Last Name
+        var lastNameClaim = user.FindFirst("last_name") ??
+                           user.FindFirst(ClaimTypes.Surname);
+        _lastName = lastNameClaim?.Value;
+
+        // Extract Tenant ID
+        var tenantClaim = user.FindFirst("tenant_id");
+        if (tenantClaim != null && Guid.TryParse(tenantClaim.Value, out var tenantId))
         {
-            _email = emailClaim.Value;
+            _tenantId = tenantId;
         }
         else
         {
-            _logger.LogDebug("Email claim missing or empty");
-            _email = null;
+            _logger.LogWarning("Tenant ID claim not found or invalid format in token - this is a security concern");
+            _tenantId = null;
         }
 
-        // Extract Roles
-        var roleClaims = user.FindAll(ClaimTypes.Role);
-        _roles = roleClaims
-            .Select(c => c.Value)
-            .Where(r => !string.IsNullOrWhiteSpace(r))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        // Extract Email Confirmed status
+        var emailConfirmedClaim = user.FindFirst("email_confirmed");
+        _emailConfirmed = emailConfirmedClaim != null &&
+                         bool.TryParse(emailConfirmedClaim.Value, out var confirmed) &&
+                         confirmed;
 
-        // Extract Permissions
-        var permissionClaims = user.FindAll("permission");
-        _permissions = permissionClaims
-            .Select(c => c.Value)
-            .Where(p => !string.IsNullOrWhiteSpace(p))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        // Extract Roles (multiple claims)
+        _roles = user.FindAll(ClaimTypes.Role)
+                    .Select(c => c.Value)
+                    .Where(r => !string.IsNullOrWhiteSpace(r))
+                    .Distinct()
+                    .ToList();
+
+        // Extract Permissions (multiple custom claims)
+        _permissions = user.FindAll("permission")
+                          .Select(c => c.Value)
+                          .Where(p => !string.IsNullOrWhiteSpace(p))
+                          .Distinct()
+                          .ToList();
+
+        // Log security-relevant missing claims
+        if (_userId == null)
+        {
+            _logger.LogWarning("Critical: User ID claim missing from authenticated user token");
+        }
+
+        if (_tenantId == null)
+        {
+            _logger.LogWarning("Critical: Tenant ID claim missing from authenticated user token - multi-tenancy compromise");
+        }
     }
 
     /// <summary>
-    /// Set default values for unauthenticated or system contexts
+    /// Set default values for unauthenticated context
     /// 
     /// Default value strategy:
-    /// - null for optional properties (UserId, Email)
-    /// - Empty collections for arrays (Roles, Permissions)
-    /// - Consistent behavior across application
+    /// - Null values for all properties
+    /// - Empty collections for roles and permissions
+    /// - Safe defaults that don't grant access
     /// 
     /// Use cases:
-    /// - Background job operations
-    /// - System maintenance tasks
-    /// - Application initialization
-    /// - Health check operations
+    /// - Background operations
+    /// - System context operations
+    /// - Unauthenticated requests
+    /// - Error scenarios (graceful degradation)
     /// </summary>
     private void SetDefaultValues()
     {
         _userId = null;
         _email = null;
+        _firstName = null;
+        _lastName = null;
+        _tenantId = null;
+        _emailConfirmed = false;
         _roles = new List<string>();
         _permissions = new List<string>();
+
+        _logger.LogDebug("Default values set for unauthenticated context");
     }
 
     #endregion
