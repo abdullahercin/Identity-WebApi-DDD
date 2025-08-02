@@ -72,6 +72,8 @@ builder.Services.AddApplicationServices();                    // Application Lay
 // - Configuration validation
 builder.Services.AddInfrastructureServices(builder.Configuration);
 
+builder.Services.AddPersistenceServices(builder.Configuration);
+
 // CORS (if needed for frontend)
 builder.Services.AddCors(options =>
 {

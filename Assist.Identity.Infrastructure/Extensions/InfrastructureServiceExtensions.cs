@@ -158,6 +158,8 @@ public static class InfrastructureServicesExtension
     /// </summary>
     private static void AddExternalServiceConnections(IServiceCollection services, IConfiguration configuration)
     {
+        services.AddHttpContextAccessor();
+
         // Redis Connection - Singleton pattern
         services.AddSingleton<IConnectionMultiplexer>(serviceProvider =>
         {
@@ -270,8 +272,9 @@ public static class InfrastructureServicesExtension
 
         // Current Tenant Service - Scoped (per-request tenant context)  
         // Extracts tenant information from subdomain, header, or JWT
-        // Will be implemented in next step
-        // services.AddScoped<ICurrentTenantService, CurrentTenantService>();
+        services.AddScoped<ICurrentTenantService, CurrentTenantService>();
+
+
     }
 
     /// <summary>
