@@ -5,9 +5,18 @@ using System.ComponentModel.DataAnnotations;
 /// <summary>
 /// User Registration Request DTO
 /// API'ye gelen user registration verilerini taşır
+/// 
+/// Bu DTO iki tip property içerir:
+/// 1. User Input Properties: Frontend'den kullanıcı tarafından girilen veriler
+/// 2. Context Properties: Controller tarafından request context'inden alınan veriler
+/// 
+/// Security Note: IpAddress ve UserAgent değerleri sensitive değil ama
+/// client tarafından manipüle edilebilir, bu yüzden sadece logging/analytics için kullanılmalı
 /// </summary>
 public class RegisterRequest
 {
+    #region User Input Properties
+
     /// <summary>
     /// Email adresi - Required ve email format validation
     /// </summary>
@@ -52,11 +61,69 @@ public class RegisterRequest
 
     /// <summary>
     /// Role names - Optional, default "User" role will be assigned
+    /// Admin tarafından bulk registration yapılırken kullanılabilir
     /// </summary>
     public List<string> RoleNames { get; set; } = new();
 
     /// <summary>
     /// Additional metadata - Extensibility için
+    /// Campaign tracking, referral codes, analytics data gibi
     /// </summary>
     public Dictionary<string, object> Metadata { get; set; } = new();
+
+    #endregion
+
+    #region Context Properties (Controller tarafından set edilir)
+
+    /// <summary>
+    /// Client IP address - Controller tarafından HttpContext'ten alınır
+    /// 
+    /// Security ve analytics purposes:
+    /// - Suspicious registration pattern detection
+    /// - Geographic analytics
+    /// - Security audit log
+    /// - Rate limiting (IP-based)
+    /// 
+    /// Note: Bu değer client tarafından set edilmemelidir, güvenlik riski oluşturur
+    /// </summary>
+    public string? IpAddress { get; set; }
+
+    /// <summary>
+    /// User agent string - Controller tarafından HttpContext'ten alınır
+    /// 
+    /// Analytics ve security purposes:
+    /// - Device/browser analytics
+    /// - Bot detection (basit seviyede)
+    /// - User experience optimization
+    /// - Security monitoring (unusual patterns)
+    /// 
+    /// Note: Bu değer de client tarafından manipüle edilebilir
+    /// </summary>
+    public string? UserAgent { get; set; }
+
+    #endregion
+
+    #region Computed Properties
+
+    /// <summary>
+    /// Full name - Computed property for convenience
+    /// </summary>
+    public string FullName => $"{FirstName.Trim()} {LastName.Trim()}";
+
+    /// <summary>
+    /// Has context info - Security/analytics için context bilgisi var mı kontrolü
+    /// </summary>
+    public bool HasContextInfo => !string.IsNullOrWhiteSpace(IpAddress) || !string.IsNullOrWhiteSpace(UserAgent);
+
+    /// <summary>
+    /// Has additional roles - Default role dışında ek role atanacak mı kontrolü
+    /// </summary>
+    public bool HasAdditionalRoles => RoleNames?.Any() == true;
+
+    /// <summary>
+    /// Has metadata - Ek metadata bilgisi var mı kontrolü
+    /// </summary>
+    public bool HasMetadata => Metadata?.Any() == true;
+
+    #endregion
 }

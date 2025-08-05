@@ -69,10 +69,10 @@ public class UserRepository : IUserRepository
 
         return await _context.Users
             .Include(u => u.UserRoles)
-                .ThenInclude(ur => ur.Role)
-                    .ThenInclude(r => r.RolePermissions)
-                        .ThenInclude(rp => rp.Permission)
-            .FirstOrDefaultAsync(u => u.Email.Value == email.Value, cancellationToken);
+            .ThenInclude(ur => ur.Role)
+            .ThenInclude(r => r.RolePermissions)
+            .ThenInclude(rp => rp.Permission)
+            .FirstOrDefaultAsync(u => u.Email == email, cancellationToken);
 
         // Again, tenant filtering is automatic - very clean and safe!
     }
@@ -151,9 +151,8 @@ public class UserRepository : IUserRepository
         if (email == null)
             throw new ArgumentNullException(nameof(email));
 
-        var query = _context.Users.Where(u => u.Email.Value == email.Value);
+        var query = _context.Users.Where(u => u.Email == email);
 
-        // If excluding a specific user (during update operations)
         if (excludeUserId.HasValue)
         {
             query = query.Where(u => u.Id != excludeUserId.Value);

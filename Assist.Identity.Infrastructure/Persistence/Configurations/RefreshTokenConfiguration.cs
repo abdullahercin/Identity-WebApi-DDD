@@ -98,41 +98,31 @@ public class RefreshTokenConfiguration : IEntityTypeConfiguration<RefreshToken>
     }
 
     /// <summary>
-    /// Step 4: Security-specific indexes
-    /// RefreshToken indexing is focused on security and performance of token operations
-    /// These indexes are different from business entity indexes
+    /// Security-specific indexes - Design-time compatible
+    /// RefreshToken indexing focused on security and performance
     /// </summary>
     private static void ConfigureSecurityIndexes(EntityTypeBuilder<RefreshToken> builder)
     {
         // TOKEN unique index - Most critical security index
-        // Every token must be globally unique across all tenants
-        // This prevents token collision attacks
         builder.HasIndex(rt => rt.Token)
             .HasDatabaseName("IX_RefreshTokens_Token")
-            .IsUnique();                               // Absolutely must be unique
+            .IsUnique();
 
         // USER + ACTIVE tokens index
-        // Common query: "Get all active tokens for this user"
-        // Used for user session management and security monitoring
-        builder.HasIndex(rt => new { rt.UserId, rt.IsActive })
+        builder.HasIndex("UserId", "IsActive")
             .HasDatabaseName("IX_RefreshTokens_UserId_IsActive");
 
         // TENANT filtering index
-        // All token queries filter by tenant for data isolation
         builder.HasIndex(rt => rt.TenantId)
             .HasDatabaseName("IX_RefreshTokens_TenantId");
 
         // EXPIRATION cleanup index
-        // System cleanup job: "Find all expired tokens to delete"
-        // This index makes token cleanup operations very fast
         builder.HasIndex(rt => rt.ExpiresAt)
             .HasDatabaseName("IX_RefreshTokens_ExpiresAt");
 
         // REVOCATION audit index
-        // Security monitoring: "Show me all revoked tokens"
-        // Used for security analysis and audit trails
         builder.HasIndex(rt => rt.RevokedAt)
             .HasDatabaseName("IX_RefreshTokens_RevokedAt")
-            .HasFilter("RevokedAt IS NOT NULL");       // Only index tokens that were actually revoked
+            .HasFilter("RevokedAt IS NOT NULL");
     }
 }

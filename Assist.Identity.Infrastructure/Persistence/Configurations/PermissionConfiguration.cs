@@ -89,28 +89,23 @@ public class PermissionConfiguration : IEntityTypeConfiguration<Permission>
     }
 
     /// <summary>
-    /// Step 4: Indexes configuration
+    /// Indexes configuration - Design-time compatible
     /// Simple but essential indexes for permission-based queries
     /// </summary>
     private static void ConfigureIndexes(EntityTypeBuilder<Permission> builder)
     {
         // TENANT + NAME composite unique index
-        // Most important index - ensures permission names are unique per tenant
-        // Same permission can exist in different tenants but not in same tenant
-        builder.HasIndex(p => new { p.TenantId, p.Name })
+        builder.HasIndex("TenantId", "Name")
             .HasDatabaseName("IX_Permissions_TenantId_Name")
-            .IsUnique();                               // Enforces business rule
+            .IsUnique();
 
         // TENANT index for basic filtering
-        // All permission queries filter by tenant first
         builder.HasIndex(p => p.TenantId)
             .HasDatabaseName("IX_Permissions_TenantId");
 
         // CATEGORY index for admin interface grouping
-        // Common query: "Show me all permissions in User Management category"
-        // This makes permission management interfaces much faster
-        builder.HasIndex(p => new { p.TenantId, p.Category })
+        builder.HasIndex("TenantId", "Category")
             .HasDatabaseName("IX_Permissions_TenantId_Category")
-            .HasFilter("Category IS NOT NULL");        // Only index non-null categories
+            .HasFilter("Category IS NOT NULL");
     }
 }

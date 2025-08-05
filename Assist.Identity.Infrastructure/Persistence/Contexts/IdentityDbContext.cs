@@ -1,8 +1,9 @@
-﻿using Microsoft.EntityFrameworkCore;
-using System.Reflection;
-using Assist.Identity.Domain.Entities;
+﻿using Assist.Identity.Application.Contracts;
 using Assist.Identity.Domain.Common;
-using Assist.Identity.Application.Contracts;
+using Assist.Identity.Domain.Entities;
+using Assist.Identity.Infrastructure.Persistence.Configurations;
+using Microsoft.EntityFrameworkCore;
+using System.Reflection;
 
 namespace Assist.Identity.Infrastructure.Persistence.Contexts;
 
@@ -86,18 +87,88 @@ public sealed class IdentityDbContext : DbContext
     /// <param name="modelBuilder">EF Core model builder</param>
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
-        // 1. Entity configurations'ları otomatik apply et
-        // Bu, aynı assembly'deki tüm IEntityTypeConfiguration<T> implementation'larını bulur
-        modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+        // GEÇICI: ApplyConfigurationsFromAssembly'yi kapatıyoruz
+        // modelBuilder.ApplyConfigurationsFromAssembly(Assembly.GetExecutingAssembly());
+
+        // MANUEL: Sadece UserConfiguration'ı apply et
+        try
+        {
+            modelBuilder.ApplyConfiguration(new UserConfiguration());
+            Console.WriteLine("✅ UserConfiguration applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ UserConfiguration failed: {ex.Message}");
+            throw;
+        }
+
+        // Diğer configuration'ları tek tek ekle
+        try
+        {
+            modelBuilder.ApplyConfiguration(new RoleConfiguration());
+            Console.WriteLine("✅ RoleConfiguration applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ RoleConfiguration failed: {ex.Message}");
+            throw;
+        }
+
+        try
+        {
+            modelBuilder.ApplyConfiguration(new PermissionConfiguration());
+            Console.WriteLine("✅ PermissionConfiguration applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ PermissionConfiguration failed: {ex.Message}");
+            throw;
+        }
+
+        try
+        {
+            modelBuilder.ApplyConfiguration(new RefreshTokenConfiguration());
+            Console.WriteLine("✅ RefreshTokenConfiguration applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ RefreshTokenConfiguration failed: {ex.Message}");
+            throw;
+        }
+        try
+        {
+            modelBuilder.ApplyConfiguration(new UserRoleConfiguration());
+            Console.WriteLine("✅ UserRoleConfiguration applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ UserRoleConfiguration failed: {ex.Message}");
+            throw;
+        }
+
+        try
+        {
+            modelBuilder.ApplyConfiguration(new RolePermissionConfiguration());
+            Console.WriteLine("✅ RolePermissionConfiguration applied successfully");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"❌ RolePermissionConfiguration failed: {ex.Message}");
+            throw;
+        }
+
+        // Multi-tenant join table warnings fix
+        modelBuilder.Entity<UserRole>().HasQueryFilter(ur =>
+            EF.Property<Guid>(ur.User, "TenantId") == _currentTenantService.TenantId);
+
+        modelBuilder.Entity<RolePermission>().HasQueryFilter(rp =>
+            EF.Property<Guid>(rp.Role, "TenantId") == _currentTenantService.TenantId);
 
         // 2. Multi-tenant global query filters'ları set et
         SetupGlobalQueryFilters(modelBuilder);
 
         // 3. Database naming conventions
         SetupNamingConventions(modelBuilder);
-
-        // 4. Global indexes ve constraints
-        SetupGlobalIndexes(modelBuilder);
 
         base.OnModelCreating(modelBuilder);
     }
@@ -166,44 +237,6 @@ public sealed class IdentityDbContext : DbContext
                 entity.SetTableName(entity.ClrType.Name);
             }
         }
-    }
-
-    /// <summary>
-    /// Global indexes ve constraints setup
-    /// 
-    /// Performance ve data integrity için önemli index'leri tanımlar:
-    /// - TenantId index'leri (multi-tenant performance için)
-    /// - Email unique constraint
-    /// - Composite index'ler
-    /// </summary>
-    /// <param name="modelBuilder">EF Core model builder</param>
-    private void SetupGlobalIndexes(ModelBuilder modelBuilder)
-    {
-        // User entity için index'ler
-        modelBuilder.Entity<User>()
-            .HasIndex(u => new { u.TenantId, u.Email })
-            .HasDatabaseName("IX_Users_TenantId_Email")
-            .IsUnique(); // Email per tenant unique
-
-        modelBuilder.Entity<User>()
-            .HasIndex(u => u.TenantId)
-            .HasDatabaseName("IX_Users_TenantId");
-
-        // Role entity için index'ler  
-        modelBuilder.Entity<Role>()
-            .HasIndex(r => new { r.TenantId, r.Name })
-            .HasDatabaseName("IX_Roles_TenantId_Name")
-            .IsUnique(); // Role name per tenant unique
-
-        // RefreshToken entity için index'ler
-        modelBuilder.Entity<RefreshToken>()
-            .HasIndex(rt => rt.Token)
-            .HasDatabaseName("IX_RefreshTokens_Token")
-            .IsUnique();
-
-        modelBuilder.Entity<RefreshToken>()
-            .HasIndex(rt => new { rt.UserId, rt.IsActive })
-            .HasDatabaseName("IX_RefreshTokens_UserId_IsActive");
     }
 
     #endregion

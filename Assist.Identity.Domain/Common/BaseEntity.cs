@@ -61,7 +61,7 @@ public abstract class BaseEntity : ITenantEntity
     /// Change tracking için gerekli
     /// </summary>
     [MaxLength(50)]
-    public string UpdatedBy { get; protected set; } = null!;
+    public string? UpdatedBy { get; protected set; }
 
     /// <summary>
     /// Domain Events - Read-only collection olarak expose edilir

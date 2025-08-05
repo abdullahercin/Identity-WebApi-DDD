@@ -27,70 +27,56 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         ConfigureEssentialIndexes(builder);
     }
 
-    /// <summary>
-    /// Table configuration - Simple and clear
-    /// </summary>
     private static void ConfigureTable(EntityTypeBuilder<User> builder)
     {
         builder.ToTable("Users");
-
-        // Primary key configuration
         builder.HasKey(u => u.Id);
-        builder.Property(u => u.Id)
-            .ValueGeneratedNever(); // Domain'de generate ediliyor
+        builder.Property(u => u.Id).ValueGeneratedNever();
     }
 
     /// <summary>
-    /// Value Objects configuration
-    /// Domain richness'ını koruyarak database'e map eder
+    /// Value Objects configuration - HasConversion Approach
+    /// 
+    /// OwnsOne yerine HasConversion kullanıyoruz:
+    /// - Value Object korunur (Domain zenginliği)
+    /// - EF Core mapping basitleşir (OwnsOne karmaşıklığı yok)
+    /// - Property conflict'i engellenir
     /// </summary>
     private static void ConfigureValueObjects(EntityTypeBuilder<User> builder)
     {
-        // Email Value Object - Authentication için kritik
-        builder.OwnsOne(u => u.Email, emailBuilder =>
-        {
-            emailBuilder.Property(e => e.Value)
-                .HasColumnName("Email")
-                .HasMaxLength(254)
-                .IsRequired();
-        });
+        // EMAIL VALUE OBJECT - HasConversion ile
+        builder.Property(u => u.Email)
+            .HasConversion(
+                email => email.Value,           // Domain → Database (Email → string)
+                value => Email.Create(value)    // Database → Domain (string → Email)
+            )
+            .HasColumnName("Email")
+            .HasMaxLength(254)
+            .IsRequired();
 
-        // Password Value Object - Security için critical
-        builder.OwnsOne(u => u.Password, passwordBuilder =>
-        {
-            passwordBuilder.Property(p => p.HashedValue)
-                .HasColumnName("PasswordHash")
-                .HasMaxLength(256)
-                .IsRequired();
-        });
+        // PASSWORD VALUE OBJECT - Aynı yaklaşım
+        builder.Property(u => u.Password)
+            .HasConversion(
+                password => password.HashedValue,           // Domain → Database
+                value => Password.FromHash(value)     // Database → Domain
+            )
+            .HasColumnName("PasswordHash")
+            .HasMaxLength(256)
+            .IsRequired();
 
-        // PhoneNumber Value Object - Optional field
-        builder.OwnsOne(u => u.PhoneNumber, phoneBuilder =>
-        {
-            phoneBuilder.Property(p => p.Value)
-                .HasColumnName("PhoneNumber")
-                .HasMaxLength(20)
-                .IsRequired(false);
-
-            phoneBuilder.Property(p => p.CountryCode)
-                .HasColumnName("PhoneCountryCode")
-                .HasMaxLength(3)
-                .IsRequired(false);
-
-            phoneBuilder.Property(p => p.NationalNumber)
-                .HasColumnName("PhoneNationalNumber")
-                .HasMaxLength(15)
-                .IsRequired(false);
-        });
+        // PHONE NUMBER VALUE OBJECT - Null-safe conversion
+        builder.Property(u => u.PhoneNumber)
+            .HasConversion(
+                phone => phone != null ? phone.Value : null,                    // Domain → Database
+                value => !string.IsNullOrEmpty(value) ? PhoneNumber.Create(value) : null  // Database → Domain
+            )
+            .HasColumnName("PhoneNumber")
+            .HasMaxLength(20)
+            .IsRequired(false);
     }
 
-    /// <summary>
-    /// Regular properties configuration
-    /// Basit ve straightforward mapping
-    /// </summary>
     private static void ConfigureProperties(EntityTypeBuilder<User> builder)
     {
-        // Basic user information
         builder.Property(u => u.FirstName)
             .HasMaxLength(50)
             .IsRequired();
@@ -99,7 +85,6 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .HasMaxLength(50)
             .IsRequired();
 
-        // Account status - Simple boolean fields
         builder.Property(u => u.IsActive)
             .IsRequired()
             .HasDefaultValue(true);
@@ -108,7 +93,6 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .IsRequired()
             .HasDefaultValue(false);
 
-        // Security fields - Basic configuration
         builder.Property(u => u.LastLoginAt)
             .IsRequired(false);
 
@@ -123,10 +107,6 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
         builder.Ignore(u => u.FullName);
     }
 
-    /// <summary>
-    /// Navigation properties configuration
-    /// Clear relationship definitions
-    /// </summary>
     private static void ConfigureNavigationProperties(EntityTypeBuilder<User> builder)
     {
         // User Roles - Many to Many through UserRole
@@ -142,24 +122,16 @@ public class UserConfiguration : IEntityTypeConfiguration<User>
             .OnDelete(DeleteBehavior.Cascade);
     }
 
-    /// <summary>
-    /// Essential indexes only
-    /// Sadece gerçekten gerekli olan performance-critical indexes
-    /// </summary>
     private static void ConfigureEssentialIndexes(EntityTypeBuilder<User> builder)
     {
-        // Multi-tenant authentication için kritik index
-        // Bu olmadan login queries çok yavaş olur
-        builder.HasIndex(u => new { u.TenantId, u.Email.Value })
+        // Lambda expression kullanarak - EF Core value object'i handle eder
+        builder.HasIndex(u => new { u.TenantId, u.Email })
             .HasDatabaseName("IX_Users_TenantId_Email")
             .IsUnique();
 
-        // Tenant filtering için gerekli
-        // Tüm user queries bu index'i kullanır
         builder.HasIndex(u => u.TenantId)
             .HasDatabaseName("IX_Users_TenantId");
 
-        // Active user queries için - Frequently used
         builder.HasIndex(u => new { u.TenantId, u.IsActive })
             .HasDatabaseName("IX_Users_TenantId_IsActive");
     }

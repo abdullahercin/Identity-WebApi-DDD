@@ -93,29 +93,22 @@ public class RoleConfiguration : IEntityTypeConfiguration<Role>
     }
 
     /// <summary>
-    /// Step 4: Indexes configuration
+    /// Indexes configuration - Design-time compatible
     /// Performance optimization for common queries
-    /// We keep it simple - only the indexes we really need
     /// </summary>
     private static void ConfigureIndexes(EntityTypeBuilder<Role> builder)
     {
         // TENANT + NAME composite unique index
-        // This is the most important index for Role entity
-        // Same role name can exist in different tenants, but not in same tenant
-        // Examples: Each company can have "Admin" role, but only one per company
-        builder.HasIndex(r => new { r.TenantId, r.Name })
+        builder.HasIndex("TenantId", "Name")
             .HasDatabaseName("IX_Roles_TenantId_Name")
-            .IsUnique();                               // Enforces business rule
+            .IsUnique();
 
         // TENANT index for filtering
-        // All role queries will filter by tenant first
         builder.HasIndex(r => r.TenantId)
             .HasDatabaseName("IX_Roles_TenantId");
 
         // ACTIVE ROLES index
-        // Common query: "Show me all active roles"
-        // This index makes that query very fast
-        builder.HasIndex(r => new { r.TenantId, r.IsActive })
+        builder.HasIndex("TenantId", "IsActive")
             .HasDatabaseName("IX_Roles_TenantId_IsActive");
     }
 }
